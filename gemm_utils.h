@@ -6,16 +6,56 @@
 #include <immintrin.h>  
 
 // column-major order matrices
-#define A(i,j) a[ (j)*lda + (i) ]
-#define B(i,j) b[ (j)*ldb + (i) ]
-#define C(i,j) c[ (j)*ldc + (i) ]
-#define ikm 256
-#define ikk 256
+#define A(i,j) a[(j)*(lda) + (i)]
+#define B(i,j) b[(j)*(ldb) + (i)]
+#define C(i,j) c[(j)*(ldc) + (i)]
+#define ikm 128
+#define ikk 128
 
 typedef union {
   __m256d v;
   double d[4];
 } f4d;
+
+void dot1x4_cache(int m, double *a, int lda, double *b, int ldb, double *c, int ldc) {
+    /* compute C(0, 0:3) with loop unrolling. */
+
+    register double b00_reg = B(0,0);
+    register double b01_reg = B(0,1);
+    register double b02_reg = B(0,2);
+    register double b03_reg = B(0,3);
+    register double ai0_reg;
+
+    for (int i = 0; i < m; i++) {
+        // unroll the loop, O3 help you
+        ai0_reg = A(i, 0);
+        C(i, 0) += ai0_reg * b00_reg;
+        C(i, 1) += ai0_reg * b01_reg;
+        C(i, 2) += ai0_reg * b02_reg;
+        C(i, 3) += ai0_reg * b03_reg;
+    }
+}
+
+void dot1x4_cache_avx(int m, double *a, int lda, double *b, int ldb, double *c, int ldc) {
+    /* compute C(0, 0:3) with loop unrolling. */
+
+    register f4d ci0_ci3_reg;
+    register f4d b00_b03_reg;
+    register f4d   ai0x4_reg;
+    
+    b00_b03_reg.d[0] = B(0,0);
+    b00_b03_reg.d[1] = B(0,1);
+    b00_b03_reg.d[2] = B(0,2);
+    b00_b03_reg.d[3] = B(0,3);
+    for (int i = 0; i < m; i++) {
+        ai0x4_reg.v   = _mm256_broadcast_sd(&A(i,0));
+        ci0_ci3_reg.v = _mm256_mul_pd(b00_b03_reg.v, ai0x4_reg.v);
+        C(i,0) += ci0_ci3_reg.d[0];
+        C(i,1) += ci0_ci3_reg.d[1];
+        C(i,2) += ci0_ci3_reg.d[2];
+        C(i,3) += ci0_ci3_reg.d[3];
+    }
+}
 
 void dot1x4(int k, double *a, int lda, double *b, int ldb, double *c, int ldc) {
     /* compute C(0, 0:3) with loop unrolling. */
@@ -353,8 +393,9 @@ void inner_kernel_packAB(int m, int n, int k, double *a, int lda,
                                        double *b, int ldb,
                                        double *c, int ldc)
 {
-    double *packA = (double*)memalign(32, sizeof(double) * (m*k));
-    double *packB = (double*)memalign(32, sizeof(double) * (k*n));
+    // make sure padding
+    double *packA = (double*)memalign(32, sizeof(double) * ((m+3)*(k+3)));
+    double *packB = (double*)memalign(32, sizeof(double) * ((k+3)*(n+3)));
     for (int j = 0; j < n; j += 4) {
         do_packB(k, &B(0, j), ldb, &packB[j*k]);
         for (int i = 0; i < m; i += 4) {

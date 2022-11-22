@@ -18,7 +18,7 @@ void rand_matrix(double *a, int m, int n, int lda) {
     }
 }
 
-void print_matrix(double *a, int m, int n, int lda) {
+void print_matrix(const double *a, int m, int n, int lda) {
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < n; j++) {
             printf("%.6f ", a[i + j*lda]);
@@ -29,18 +29,18 @@ void print_matrix(double *a, int m, int n, int lda) {
 }
 
 // compare two matrices
-int matrix_compare_bits(double *x, double *y, int m, int n, int ldx, int ldy) {
+int matrix_compare_bits(const double *x, const double *y, int m, int n, int ldx, int ldy) {
     for (int j = 0; j < n; j++) {
         for (int i = 0; i < m; i++) {
             // if (x[i + j*ldx] != y[i + j*ldy]) {
-            if (abs(x[i + j*ldx] - y[i + j*ldy]) > 1e-10) {
+            if (fabs(x[i + j*ldx] - y[i + j*ldy]) > 1e-10) {
                 union {
-                    double    d;
-                    long long l;
+                    double d;
+                    long   l;
                 } tmp1, tmp2;
                 tmp1.d = x[i + j*ldx];
                 tmp2.d = y[i + j*ldy];
-                printf("%.6f != %.6f\n %llx v.s. %llx\n", tmp1.d, tmp2.d, tmp1.l, tmp2.l);
+                printf("%.6f != %.6f\n %lx v.s. %lx\n", tmp1.d, tmp2.d, tmp1.l, tmp2.l);
                 return 0;
             } 
         }
@@ -48,7 +48,7 @@ int matrix_compare_bits(double *x, double *y, int m, int n, int ldx, int ldy) {
     return 1;
 }
 
-double matrix_compare(int m, int n, double *a, int lda, double *b, int ldb)
+double matrix_compare(int m, int n, const double *a, int lda, const double *b, int ldb)
 {
     int i, j;
     double err = 0.0, absdiff;
@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
             t = 2;
         }
         omp_set_num_threads(t);
-        printf("#thread -> %d\n", t);
+        printf("#thread -> %d/%d\n", t, omp_get_num_procs());
 #endif
     }
     else {
@@ -89,50 +89,100 @@ int main(int argc, char *argv[]) {
     n = k = m;
 
     int lda, ldb, ldc;
-    lda = (m > 1000) ? m : 1000;
-    ldb = (k > 1000) ? k : 1000;
-    ldc = (m > 1000) ? m : 1000;
 
-    double *a = (double *)memalign(32, sizeof(double) * lda*(k+1));
-    double *b = (double *)memalign(32, sizeof(double) * ldb*n);
-    double *c = (double *)memalign(32, sizeof(double) * ldc*n);
-    double *d = (double *)memalign(32, sizeof(double) * ldc*n);
+    // make padding
+    if (m % 4) {
+        lda = m+4 - m%4;
+        ldb = k+4 - k%4;
+        ldc = m+4 - m%4;
+    }
+    else {
+        lda = m;
+        ldb = k;
+        ldc = m;
+    }
+
+    double *a = (double *)memalign(32, sizeof(double) * lda*(k+3));
+    double *b = (double *)memalign(32, sizeof(double) * ldb*(n+3));
+    double *c = (double *)memalign(32, sizeof(double) * ldc*(n+3));
+    double *d = (double *)memalign(32, sizeof(double) * ldc*(n+3));
 
     struct timeval start, end;
+    double t1, t2;
+
+    // clear up the array with zeros
+    memset(a, 0, sizeof(double)*lda*(k+3));
+    memset(b, 0, sizeof(double)*ldb*(n+3));
+    memset(c, 0, sizeof(double)*ldc*(n+3));
+    memset(d, 0, sizeof(double)*ldc*(n+3));
 
     // init matrix
     rand_matrix(a, m, k, lda);
     rand_matrix(b, k, n, ldb);
 
-    // clear destination matrix
-    memset(c, 0, sizeof(double)*ldc*n);
-    memset(d, 0, sizeof(double)*ldc*n);
-
-    // compute the correct answer
-    // gettimeofday(&start, NULL);
-    // trivial_gemm(m, n, k, a, lda, b, ldb, c, ldc);
-    // gettimeofday(&end, NULL);
-    // printf("Trivial: %.6f sec\n", ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6);
-
-    // compute the accelerated method
+    /* compute the correct answer */ 
     gettimeofday(&start, NULL);
-    my_gemm_fin(m, n, k, a, lda, b, ldb, d, ldc);
+    gemm_trivial(m, n, k, a, lda, b, ldb, c, ldc);
     gettimeofday(&end, NULL);
-    printf("Improved: %.6f sec\n", ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6);
+    t1 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("Trivial:\t%.6f sec\n", t1);
+
+    /* Cache */ 
+    gettimeofday(&start, NULL);
+    gemm_cache(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("Cache:\t\t%.6f sec\n", t2);
+
+    /* Cache-1x4 */ 
+    memset(d, 0, sizeof(double)*ldc*(n+3));
+    gettimeofday(&start, NULL);
+    gemm_1x4(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("1x4:\t\t%.6f sec\n", t2);
+
+    /* Cache-4x4 */ 
+    memset(d, 0, sizeof(double)*ldc*(n+3));
+    gettimeofday(&start, NULL);
+    gemm_4x4(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("4x4:\t\t%.6f sec\n", t2);
+
+    /* Cache-4x4-avx */ 
+    memset(d, 0, sizeof(double)*ldc*(n+3));
+    gettimeofday(&start, NULL);
+    gemm_4x4_avx(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("4x4-avx:\t%.6f sec\n", t2);
+
+    /* Cache-4x4-ik */ 
+    memset(d, 0, sizeof(double)*ldc*(n+3));
+    gettimeofday(&start, NULL);
+    gemm_4x4_ik(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("Block:\t\t%.6f sec\n", t2);
+
+    /* packOpenMP */ 
+    memset(d, 0, sizeof(double)*ldc*(n+3));
+    gettimeofday(&start, NULL);
+    gemm_pack_memory(m, n, k, a, lda, b, ldb, d, ldc);
+    gettimeofday(&end, NULL);
+    t2 = ((end.tv_sec-start.tv_sec)*1.0e6 + end.tv_usec-start.tv_usec) / 1.0e6;
+    printf("packOpenMP:\t%.6f sec\n", t2);
 
     // check the result
+    printf("\nmax elem-wise error = %g\n", matrix_compare(m, n, c, ldc, d, ldc));
     if (!matrix_compare_bits(c, d, m, n, ldc, ldc)) {
         puts("ERROR");
     }
     else {
         puts("CORRECT");
+        printf("final speedup: %.6fx\n", t1/t2);
     }
-    printf("max elem-wise error = %g\n", matrix_compare(m, n, c, ldc, d, ldc));
-
-    // print_matrix(a, m, k, lda);
-    // print_matrix(b, k, n, ldb);
-    // print_matrix(c, 8, 8, ldc);
-    // print_matrix(d, 8, 8, ldc);
 
     free(a);
     free(b);
