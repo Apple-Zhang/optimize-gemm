@@ -18,3 +18,6 @@ or add -O3 option for faster execution:
 ```bash
 gcc -mavx -fopen -O3 gemm_test.c -o gemm_main
 ```
+
+## Nov 28, 2022
+I upload a slide (slide-optimize-gemm.pdf) that briefly explains the optimizations.
